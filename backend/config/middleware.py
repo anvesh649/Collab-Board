@@ -24,11 +24,13 @@ class RequestIDMiddleware:
 
         structlog.contextvars.bind_contextvars(request_id=request_id)
 
-        response = self.get_response(request)
+        try:
+            response = self.get_response(request)
+            response["X-Request-ID"] = request_id
+            return response
 
-        response["X-Request-ID"] = request_id
-
-        return response
+        finally:
+            structlog.contextvars.clear_contextvars()
 
 
 class CanonicalLogLineMiddleware:
