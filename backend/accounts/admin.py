@@ -35,4 +35,3 @@ class UserAdmin(BaseUserAdmin):
             },
         ),
     )
-
