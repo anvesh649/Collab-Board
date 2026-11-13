@@ -167,6 +167,12 @@ LOGGING = {
         },
     },
     "root": {"handlers": ["stdout"], "level": LOG_LEVEL},
+    # Django attaches its own plain-text handlers to these loggers. Redefining them here
+    # replaces those handlers with ours, so each event is printed once, in our format.
+    "loggers": {
+        "django": {"handlers": ["stdout"], "level": LOG_LEVEL, "propagate": False},
+        "django.server": {"handlers": ["stdout"], "level": "WARNING", "propagate": False},
+    },
 }
 
 
