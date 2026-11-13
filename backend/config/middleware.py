@@ -24,13 +24,12 @@ class RequestIDMiddleware:
 
         structlog.contextvars.bind_contextvars(request_id=request_id)
 
-        try:
-            response = self.get_response(request)
-            response["X-Request-ID"] = request_id
-            return response
-
-        finally:
-            structlog.contextvars.clear_contextvars()
+        response = self.get_response(request)
+        response["X-Request-ID"] = request_id
+        # No clear here: Django logs 4xx/5xx ("Not Found: ...") after the middleware chain
+        # returns, and those lines should still carry this request's ID. The clear at the
+        # start of the next request is what stops IDs leaking between requests.
+        return response
 
 
 class CanonicalLogLineMiddleware:

@@ -15,6 +15,7 @@ from pathlib import Path
 
 import environ
 import structlog
+from structlog.tracebacks import ExceptionDictTransformer
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -150,7 +151,13 @@ LOGGING = {
     "formatters": {
         "json": {
             "()": structlog.stdlib.ProcessorFormatter,
-            "processor": structlog.processors.JSONRenderer(),
+            "processors": [
+                # drop structlog's internal _record/_from_structlog keys
+                structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+                # exceptions as structured JSON; locals off so passwords/tokens never reach logs
+                structlog.processors.ExceptionRenderer(ExceptionDictTransformer(show_locals=False)),
+                structlog.processors.JSONRenderer(),
+            ],
             "foreign_pre_chain": pre_chain,
         },
         "console": {
