@@ -8,6 +8,7 @@ collabboard/
 │   ├── config/          settings, URLs, logging middleware, ASGI/WSGI entry points
 │   └── accounts/        custom user model (email login, UUIDv7 primary key)
 ├── docker-compose.yaml  local PostgreSQL
+├── Makefile             developer commands (`make` lists them)
 ├── .env.example         every config variable, with placeholder values
 └── README.md
 ```
@@ -99,11 +100,15 @@ DJANGO_LOG_FORMAT=json uv run python manage.py runserver 2>&1 | jq -R 'fromjson?
 
 ## Common commands
 
+Run these from the repository root. `make` on its own lists every target.
+
 | Task | Command |
 |---|---|
-| Start / stop the database | `docker compose up -d db` / `docker compose stop` |
-| Database shell | `docker compose exec db sh -c 'psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'` |
-| Wipe the database (deletes all data) | `docker compose down -v` |
-| Create migrations after model changes | `cd backend && uv run python manage.py makemigrations` |
-| Apply migrations | `cd backend && uv run python manage.py migrate` |
-| Check for config problems | `cd backend && uv run python manage.py check` |
+| First-time setup | `make env install up migrate superuser` |
+| Start / stop the database | `make up` / `make down` |
+| Database shell | `make psql` |
+| Wipe the database (asks first, deletes all data) | `make db-reset` |
+| Dev server | `make run` (or `make run-json` for production-style logs) |
+| Create / apply migrations | `make makemigrations` / `make migrate` |
+| Format and auto-fix | `make fmt` |
+| Everything CI checks (lint, missing migrations, Django checks) | `make ci` |
