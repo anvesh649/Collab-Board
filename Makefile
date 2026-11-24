@@ -2,18 +2,18 @@
 #
 # Notes for editing:
 #   - Recipe lines must start with a TAB, not spaces.
-#   - Each recipe line runs in its own shell, so `cd backend` must be on the same line as the command.
+#   - Each recipe line runs in its own shell, so `cd` must be on the same line as the command.
 #   - Write `$$` for a literal `$` (a single `$` is a Make variable).
 #   - Add `## description` after a target to show it in `make help`; `##@ Name` starts a section.
 
 .DEFAULT_GOAL := help
 
-# Every Django command runs from backend/ through uv's virtualenv.
-MANAGE := cd backend && uv run python manage.py
-UV := cd backend && uv run
+# Every API command runs from apps/api. Bun installs and runs scripts; the server runs on Node.
+API := cd apps/api &&
+PRISMA := $(API) bunx prisma
 
-.PHONY: help install env up down logs psql db-reset run run-json migrate makemigrations \
-        superuser shell check fmt lint makemigrations-check ci
+.PHONY: help install env up down logs psql db-reset run run-json build start migrate \
+        makemigrations generate studio typecheck test fmt lint makemigrations-check ci
 
 ##@ Help
 
@@ -24,8 +24,9 @@ help: ## Show this help
 
 ##@ Setup
 
-install: ## Create backend/.venv and install the locked dependencies
-	cd backend && uv sync
+install: ## Install the locked dependencies and generate the Prisma client
+	bun install --frozen-lockfile
+	$(PRISMA) generate
 
 env: ## Create .env from .env.example (never overwrites an existing .env)
 	cp -n .env.example .env
@@ -49,40 +50,49 @@ db-reset: ## DELETE all database data and start a fresh, empty database (asks fi
 	docker compose down -v
 	docker compose up -d db
 
-##@ Django
+##@ API
 
-run: ## Start the dev server (log format from .env)
-	$(MANAGE) runserver
+run: ## Start the API in watch mode (log format from .env)
+	$(API) bun run dev
 
-run-json: ## Start the dev server with production-style JSON logs, pretty-printed by jq
-	cd backend && DJANGO_LOG_FORMAT=json uv run python manage.py runserver 2>&1 | jq -R 'fromjson? // .'
+run-json: ## Start the API with production-style JSON logs, pretty-printed by jq
+	$(API) LOG_FORMAT=json bun run dev 2>&1 | jq -R 'fromjson? // .'
 
-migrate: ## Apply database migrations
-	$(MANAGE) migrate
+build: ## Compile the API to apps/api/dist
+	$(API) bun run build
 
-makemigrations: ## Create migrations after model changes
-	$(MANAGE) makemigrations
+start: build ## Run the compiled API on Node, as production does
+	$(API) node dist/main.js
 
-superuser: ## Create an admin user (prompts for email and password)
-	$(MANAGE) createsuperuser
+migrate: ## Apply pending migrations (never resets the database)
+	$(PRISMA) migrate deploy
 
-shell: ## Open the Django shell
-	$(MANAGE) shell
+makemigrations: ## Create a migration from schema changes without applying it: make makemigrations name=add_boards
+	$(PRISMA) migrate dev --create-only --name $(or $(name),change)
 
-check: ## Run Django's system checks
-	$(MANAGE) check
+generate: ## Regenerate the Prisma client after editing schema.prisma
+	$(PRISMA) generate
+
+studio: ## Browse the database in Prisma Studio
+	$(PRISMA) studio
 
 ##@ Quality
 
+typecheck: ## Type-check without building
+	$(API) bun run typecheck
+
+test: ## Run the test suite (starts a throwaway PostgreSQL container)
+	$(API) bun run test
+
 fmt: ## Auto-fix lint issues and format the code
-	$(UV) ruff check . --fix
-	$(UV) ruff format .
+	$(API) bun run lint --fix
+	bunx prettier --write .
 
 lint: ## Check lint and formatting without changing files (what CI runs)
-	$(UV) ruff check .
-	$(UV) ruff format --check .
+	$(API) bun run lint
+	bunx prettier --check .
 
-makemigrations-check: ## Fail if a model changed without a migration
-	$(MANAGE) makemigrations --check --dry-run
+makemigrations-check: ## Fail if schema.prisma changed without a migration (needs SHADOW_DATABASE_URL)
+	$(PRISMA) migrate diff --from-migrations prisma/migrations --to-schema prisma/schema.prisma --exit-code
 
-ci: lint makemigrations-check check ## Run every check CI runs, before you push
+ci: lint typecheck makemigrations-check test ## Run every check CI runs, before you push

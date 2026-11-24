@@ -1,114 +1,124 @@
 # CollabBoard
 
-A real-time collaborative whiteboard. The backend is Django on PostgreSQL.
+A real-time collaborative whiteboard. The API is NestJS with Prisma on PostgreSQL, in a Bun
+workspace. Bun installs packages and runs scripts; the server itself runs on Node.js LTS.
+
+The first version was written in Django. It is kept in git history under the tag `django-final`.
 
 ```
 collabboard/
-├── backend/             Django project (uv-managed)
-│   ├── config/          settings, URLs, logging middleware, ASGI/WSGI entry points
-│   └── accounts/        custom user model (email login, UUIDv7 primary key)
-├── docker-compose.yaml  local PostgreSQL
-├── Makefile             developer commands (`make` lists them)
-├── .env.example         every config variable, with placeholder values
-└── README.md
+├── apps/
+│   └── api/                    NestJS API
+│       ├── prisma/             schema.prisma and SQL migrations
+│       ├── src/
+│       │   ├── accounts/       users: email login, UUIDv7 ids, argon2 password hashes
+│       │   ├── config/         environment schema, validated at startup
+│       │   ├── database/       the Prisma client, connected on start, closed on shutdown
+│       │   ├── http/           request IDs and the allowed-hosts check
+│       │   └── logging/        pino: JSON or console, one canonical line per request
+│       └── test/               Vitest, against a real PostgreSQL container
+├── docker/postgres/init.sql    creates the shadow database on first start
+├── docker-compose.yaml         local PostgreSQL
+├── Makefile                    developer commands (`make` lists them)
+├── .env.example                every config variable, with placeholder values
+└── package.json                Bun workspace root
 ```
 
 ## Prerequisites
 
-- [uv](https://docs.astral.sh/uv/) (installs and manages Python 3.14 for you)
-- Docker Desktop (for PostgreSQL)
+- [Bun](https://bun.sh) for installing packages and running scripts
+- Node.js 24 LTS (see `.node-version`) to run the server, as production does
+- Docker Desktop, for PostgreSQL and for the tests
 
 ## Getting started
 
 ```bash
-cp .env.example .env              # then edit .env: set a password and a generated secret key
-docker compose up -d db           # start PostgreSQL; wait until `docker compose ps` shows healthy
-cd backend
-uv sync                           # create .venv and install locked dependencies
-uv run python manage.py migrate
-uv run python manage.py createsuperuser
-uv run python manage.py runserver
+make env          # create .env from .env.example, then set a password in it
+make install      # bun install --frozen-lockfile, then generate the Prisma client
+make up           # start PostgreSQL; wait until `docker compose ps` shows healthy
+make migrate      # apply the migrations
+make run          # the API on http://localhost:3000, restarting on changes
 ```
-
-Admin: http://127.0.0.1:8000/admin/ (log in with your email).
 
 ## Configuration
 
-All configuration comes from environment variables. Nothing secret is committed; `.env` is git-ignored.
+All configuration comes from environment variables, validated once at startup by a `zod`
+schema in `apps/api/src/config/env.ts`. A missing or malformed value stops the process with
+a list of every problem. Nothing secret is committed; `.env` is git-ignored.
 
-| Variable | Required | Default | Used by | Purpose |
-|---|---|---|---|---|
-| `DJANGO_SECRET_KEY` | yes | none, startup fails | Django | Signing key for sessions, CSRF and password reset tokens |
-| `DJANGO_DEBUG` | no | `false` | Django | Debug pages and auto-reload. Never `true` in production |
-| `DJANGO_ALLOWED_HOSTS` | yes, when `DJANGO_DEBUG=false` | `[]` | Django | Comma-separated hostnames the site answers to, no scheme or port (`shop.com,.shop.com`). Requests with any other `Host` header get 400, which blocks Host header poisoning. With `DEBUG` on, Django also allows `localhost`, `127.0.0.1` and `[::1]` |
-| `DATABASE_URL` | yes | none, startup fails | Django | Database connection, e.g. `postgres://user:pass@host:5432/db` |
-| `DJANGO_LOG_FORMAT` | no | `json` | Django | `json` (one JSON object per line, for production and log tools) or `console` (coloured text, for local development) |
-| `DJANGO_LOG_LEVEL` | no | `INFO` | Django | Minimum level logged: `DEBUG`, `INFO`, `WARNING`, `ERROR` |
-| `POSTGRES_DB` | yes, for Compose | none | docker-compose | Database created on first start |
-| `POSTGRES_USER` | yes, for Compose | none | docker-compose | Database user created on first start |
-| `POSTGRES_PASSWORD` | yes, for Compose | none | docker-compose | Password for that user |
-
-Required variables have no fallback on purpose: a missing secret or database URL stops the app at startup instead of running with a wrong value. `DEBUG` defaults to off and `DJANGO_LOG_FORMAT` defaults to `json`, so a server with nothing set fails safe and still produces machine-readable logs.
+| Variable              | Required                        | Default             | Purpose                                                                                                                                                                                                                                   |
+| --------------------- | ------------------------------- | ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `NODE_ENV`            | no                              | `production`        | `development`, `test` or `production`. Unset means production, so a forgotten setting fails safe                                                                                                                                          |
+| `PORT`                | no                              | `3000`              | Port the API listens on                                                                                                                                                                                                                   |
+| `DATABASE_URL`        | yes                             | none, startup fails | PostgreSQL connection, e.g. `postgres://user:pass@host:5432/db`                                                                                                                                                                           |
+| `SHADOW_DATABASE_URL` | only for the migrations check   | none                | An empty scratch database that `make makemigrations-check` replays the migrations into                                                                                                                                                    |
+| `ALLOWED_HOSTS`       | yes, when `NODE_ENV=production` | empty               | Comma-separated hostnames the API answers to, no scheme or port (`shop.com,.shop.com`). Any other `Host` header gets 400, which blocks Host header poisoning. Outside production, `localhost`, `127.0.0.1` and `[::1]` are always allowed |
+| `LOG_FORMAT`          | no                              | `json`              | `json` (one JSON object per line, for production and log tools) or `console` (readable text, for local development)                                                                                                                       |
+| `LOG_LEVEL`           | no                              | `info`              | Minimum level logged: `trace`, `debug`, `info`, `warn`, `error`, `fatal`                                                                                                                                                                  |
+| `POSTGRES_DB`         | yes, for Compose                | none                | Database created when the volume is first created                                                                                                                                                                                         |
+| `POSTGRES_USER`       | yes, for Compose                | none                | Database user created on first start                                                                                                                                                                                                      |
+| `POSTGRES_PASSWORD`   | yes, for Compose                | none                | Password for that user                                                                                                                                                                                                                    |
 
 ### Precedence
 
 When the same variable is set in more than one place, the first match wins:
 
-1. **Real environment variables**: exported in your shell, set inline (`DJANGO_DEBUG=false uv run ...`), or set by the platform (Docker, Kubernetes, CI)
+1. **Real environment variables**: exported in your shell, set inline (`LOG_FORMAT=json make run`), or set by the platform (Docker, Kubernetes, CI)
 2. **`.env`** in the repository root (local development only)
-3. **Defaults in `settings.py`**, only for optional variables such as `DJANGO_DEBUG`
+3. **Defaults in `env.ts`**, only for optional variables such as `LOG_FORMAT`
 
-This works because `environ.Env.read_env()` only fills in variables that are not already set; it never overwrites them. In production there is no `.env` file, and the platform supplies everything as real environment variables.
+This works because `@nestjs/config` (and `process.loadEnvFile` in `prisma.config.ts`) only
+fill in variables that are not already set; they never overwrite them. In production there
+is no `.env` file, and the platform supplies everything as real environment variables.
+`docker compose` reads the same `.env` to fill `${POSTGRES_*}`, with the same rule.
 
-To check it yourself, with `DJANGO_DEBUG=true` in `.env`:
+## Database
 
-```bash
-cd backend
-uv run python manage.py shell -c "from django.conf import settings; print(settings.DEBUG)"
-# True   (from .env)
-DJANGO_DEBUG=false uv run python manage.py shell -c "from django.conf import settings; print(settings.DEBUG)"
-# False  (the real environment variable wins)
-```
-
-Note: `docker compose` also reads `.env` from this folder to fill `${POSTGRES_*}` in `docker-compose.yaml`, with the same rule that shell variables win.
+- The schema is `apps/api/prisma/schema.prisma`; migrations are plain SQL in `prisma/migrations/`.
+  Review the SQL of every migration before committing it, and never edit one that has been applied elsewhere.
+- Rules the Prisma schema cannot express (CHECK constraints) are added by hand to the migration SQL.
+  Prisma ignores them when comparing, so they are not dropped by later migrations.
+- `make migrate` runs `prisma migrate deploy`, which only applies pending migrations.
+  `prisma migrate dev` can reset a database, so it is used only to create migrations (`make makemigrations name=...`).
+- User emails are stored trimmed and lowercased, and a CHECK constraint rejects anything else,
+  so `A@x.com` and `a@x.com` can never be two accounts. User IDs are UUIDv7 from PostgreSQL 18's `uuidv7()`.
 
 ## Logging
 
-All logs go to stdout; the platform (Docker, later Loki) collects them. Nothing writes log files.
+All logs go to stdout as structured lines; the platform (Docker, later Loki) collects them.
+Nothing writes log files. The setup is in `apps/api/src/logging/`.
 
-- **One pipeline.** Our code logs with `structlog`; Django and libraries log with the standard `logging` module. Both go through the same handler and formatter (`LOGGING` and `structlog.configure` in `config/settings.py`), so every line has the same fields: `event`, `level`, `logger`, `timestamp` (UTC) and, during a request, `request_id`.
-- **Request IDs.** `RequestIDMiddleware` (`config/middleware.py`) reuses a valid incoming `X-Request-ID` header or generates a UUID, attaches it to every log line written during that request, and returns it in the `X-Request-ID` response header. Quote that header in bug reports.
-- **Canonical line.** `CanonicalLogLineMiddleware` writes exactly one `http_request` line per request with `method`, `route` (the URL pattern, not the raw path), `status`, `duration_ms` and `user_id`, including for 404s and 500s.
-- **Exceptions** are rendered as structured JSON (`exception[].exc_type`, `exc_value`, `frames` with file, line and function). Local variables are deliberately left out so passwords and tokens never reach the logs.
+- **Request IDs.** Each request reuses a valid incoming `X-Request-ID` header (letters, digits and
+  `-`, at most 128 characters) or gets a new UUID. It is returned in the `X-Request-ID` response
+  header, so quote it in bug reports, and it is on every line logged during that request,
+  including lines from services, through `AsyncLocalStorage`.
+- **Canonical line.** Exactly one `http_request` line per request with `method`, `route` (the
+  pattern such as `/boards/:id`, never the raw path or query string), `status`, `duration_ms` and
+  `user_id`, including for 404s (`route: null`) and 500s.
+- **Errors** are logged once, with their stack trace, by Nest's exception handler, under the same `request_id`.
 - **Never log** passwords, tokens, cookies, request bodies or emails. Log IDs instead.
 
-Writing a log line:
+Writing a log line from a service:
 
-```python
-import structlog
+```ts
+constructor(private readonly log: PinoLogger) {}
 
-log = structlog.get_logger(__name__)
-log.info("order_cancelled", order_id=str(order.pk))   # fixed snake_case event name, data as fields
-```
-
-Viewing JSON locally (non-JSON lines such as the `runserver` banner pass through unchanged):
-
-```bash
-cd backend
-DJANGO_LOG_FORMAT=json uv run python manage.py runserver 2>&1 | jq -R 'fromjson? // .'
+this.log.info({ board_id: board.id }, "board_opened"); // fields first, then a fixed snake_case event name
 ```
 
 ## Common commands
 
 Run these from the repository root. `make` on its own lists every target.
 
-| Task | Command |
-|---|---|
-| First-time setup | `make env install up migrate superuser` |
-| Start / stop the database | `make up` / `make down` |
-| Database shell | `make psql` |
-| Wipe the database (asks first, deletes all data) | `make db-reset` |
-| Dev server | `make run` (or `make run-json` for production-style logs) |
-| Create / apply migrations | `make makemigrations` / `make migrate` |
-| Format and auto-fix | `make fmt` |
-| Everything CI checks (lint, missing migrations, Django checks) | `make ci` |
+| Task                                                          | Command                                                   |
+| ------------------------------------------------------------- | --------------------------------------------------------- |
+| First-time setup                                              | `make env install up migrate`                             |
+| Start / stop the database                                     | `make up` / `make down`                                   |
+| Database shell                                                | `make psql`                                               |
+| Wipe the database (asks first, deletes all data)              | `make db-reset`                                           |
+| API in watch mode                                             | `make run` (or `make run-json` for production-style logs) |
+| Build and run the compiled API on Node                        | `make start`                                              |
+| Create / apply migrations                                     | `make makemigrations name=...` / `make migrate`           |
+| Tests (starts a throwaway PostgreSQL container)               | `make test`                                               |
+| Format and auto-fix                                           | `make fmt`                                                |
+| Everything CI checks (lint, types, missing migrations, tests) | `make ci`                                                 |

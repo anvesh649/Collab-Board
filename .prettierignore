@@ -1,0 +1,6 @@
+bun.lock
+**/dist
+**/coverage
+**/src/generated
+**/prisma/migrations
+.idea
